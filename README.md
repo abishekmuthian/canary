@@ -32,9 +32,17 @@ Ctrl+C to stop. The mount is removed automatically.
 
 ## Two modes
 
+| | WebDAV (default) | NFS |
+|---|---|---|
+| Root required | No | Yes |
+| Mount type in `mount` output | `webdav` | `nfs` (blends in) |
+| Server visible to attacker | Yes (same UID) | No (runs as root) |
+| Attacker can kill/unmount | Yes | No |
+| Multiple mount points | Yes | One per instance |
+
 ### WebDAV mode (default)
 
-No root required. Mounts via `mount_webdav`, which ships with macOS. Good for quick setup.
+No root required. Runs entirely as your user — no sudo, no kernel extensions, no FUSE. Mounts via `mount_webdav`, which ships with macOS. Good for quick setup.
 
 ```
 ./canary ~/.secrets.d ~/.aws-backup ~/old-creds
