@@ -1,11 +1,8 @@
 package main
 
 import (
-	"fmt"
 	"log"
-	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"time"
 )
@@ -64,9 +61,9 @@ func (a *Alerter) Alert(al Alert) {
 		go a.identifyProcess(al)
 	}
 
-	// macOS notification
+	// Desktop notification
 	if a.notify && al.Severity >= SevWarning {
-		go macNotify(al)
+		go sendNotification(al)
 	}
 }
 
@@ -81,32 +78,4 @@ func (a *Alerter) identifyProcess(al Alert) {
 	}
 }
 
-// consoleUser returns the currently logged-in GUI user.
-// When running as root, we need to send notifications as this user
-// since root has no connection to the user's notification center.
-func consoleUser() string {
-	out, err := exec.Command("stat", "-f", "%Su", "/dev/console").Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
 
-func macNotify(al Alert) {
-	title := fmt.Sprintf("Canary [%s]", al.Severity)
-	msg := fmt.Sprintf("%s: %s%s", al.Operation, al.Mount, al.Path)
-	script := fmt.Sprintf(
-		`display notification %q with title %q sound name "Sosumi"`,
-		msg, title)
-
-	if os.Getuid() == 0 {
-		// Running as root — deliver notification via the console user's session
-		user := consoleUser()
-		if user == "" || user == "root" {
-			return
-		}
-		exec.Command("sudo", "-u", user, "osascript", "-e", script).Run()
-	} else {
-		exec.Command("osascript", "-e", script).Run()
-	}
-}

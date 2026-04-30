@@ -1,0 +1,18 @@
+[Unit]
+Description=Canary filesystem honeypot
+Documentation=https://github.com/dweinstein/canary
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/canary -mode nfs -log @LOG_PATH@ @MOUNT_POINT@
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=10s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

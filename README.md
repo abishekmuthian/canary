@@ -1,6 +1,6 @@
 # canary
 
-A filesystem honeypot for macOS. Plants fake secret files (`.env`, `id_rsa`, `credentials.json`, etc.) at mount points you choose. Any process that reads these files triggers an immediate alert — because nothing legitimate should ever touch them.
+A filesystem honeypot for macOS and Linux. Plants fake secret files (`.env`, `id_rsa`, `credentials.json`, etc.) at mount points you choose. Any process that reads these files triggers an immediate alert — because nothing legitimate should ever touch them.
 
 The idea: if malware, a rogue script, or an attacker with shell access starts scanning your home directory for credentials, the canary trips before they find anything real.
 
@@ -8,9 +8,11 @@ The idea: if malware, a rogue script, or an attacker with shell access starts sc
 
 ## How it works
 
-The tool runs a small server (WebDAV or NFS) that serves a virtual directory of fake-but-realistic secret files. It mounts this directory at a path you specify (e.g., `~/.secrets.d`). Every file access passes through the server, which logs the operation and fires a macOS notification.
+The tool runs a small server (WebDAV or NFS) that serves a virtual directory of fake-but-realistic secret files. It mounts this directory at a path you specify (e.g., `~/.secrets.d`). Every file access passes through the server, which logs the operation and fires a desktop notification.
 
 There are no real files on disk. The mount point is a virtual filesystem backed by your server process. Nothing persists if the server stops.
+
+**Platform support:** macOS supports both WebDAV (no root) and NFS (root). Linux supports only NFS — WebDAV via `mount.davfs` requires `/etc/fstab` entries for non-root mounts, which doesn't fit canary's ephemeral random-port model.
 
 ## Install
 
@@ -28,8 +30,16 @@ go install github.com/dweinstein/canary@latest
 
 ## Quick start
 
+On macOS:
+
 ```
 canary ~/.secrets.d
+```
+
+On Linux (NFS mode requires root):
+
+```
+sudo canary -mode nfs ~/.secrets.d
 ```
 
 That's it. The directory `~/.secrets.d` now contains bait files. Open another terminal and try:
@@ -39,13 +49,13 @@ ls ~/.secrets.d/
 cat ~/.secrets.d/.env
 ```
 
-You'll see alerts in the canary terminal and get a macOS notification with a sound.
+You'll see alerts in the canary terminal and get a desktop notification.
 
 Ctrl+C to stop. The mount is removed automatically.
 
 ## Two modes
 
-| | WebDAV (default) | NFS |
+| | WebDAV (macOS only) | NFS |
 |---|---|---|
 | Root required | No | Yes |
 | Mount type in `mount` output | `webdav` | `nfs` (blends in) |
@@ -53,7 +63,9 @@ Ctrl+C to stop. The mount is removed automatically.
 | Attacker can kill/unmount | Yes | No |
 | Multiple mount points | Yes | One per instance |
 
-### WebDAV mode (default)
+On macOS the default is `webdav`. On Linux the default is `nfs` (only mode supported).
+
+### WebDAV mode (macOS only)
 
 No root required. Runs entirely as your user — no sudo, no kernel extensions, no FUSE. Mounts via `mount_webdav`, which ships with macOS. Good for quick setup.
 
@@ -83,14 +95,14 @@ One mount point per instance. Run multiple instances for multiple directories.
 
 ### When to use which
 
-Use WebDAV for low-friction canaries you can spin up anywhere. Use NFS for canaries that need to survive an attacker who has your user shell and is looking around.
+On macOS, use WebDAV for low-friction canaries you can spin up without root. Use NFS for canaries that need to survive an attacker who has your user shell and is looking around. On Linux only NFS is available.
 
 ## Flags
 
 ```
 -mode webdav|nfs    Server mode (default: webdav)
 -port N             Server port, 0 for random (default: 0)
--notify             macOS notifications on alerts (default: true)
+-notify             desktop notifications on alerts (default: true)
 -log PATH           Log to file instead of stderr
 -v                  Verbose — show suppressed duplicate alerts
 ```
@@ -117,7 +129,9 @@ A `.metadata_never_index` file is included to prevent Spotlight from indexing th
 
 ## Alerts
 
-Alerts go to stderr (or `-log` file) and optionally macOS notifications.
+Alerts go to stderr (or `-log` file) and optionally desktop notifications (`osascript` on macOS, `notify-send` on Linux). Only `CRITICAL` and `WARNING` alerts produce desktop notifications; `INFO` (directory listings) is logged only.
+
+On Linux, notifications work in NFS mode (run via `sudo`) by detecting the logged-in desktop user — `$SUDO_USER` first, then an active x11/wayland session via `loginctl` — and dispatching `notify-send` into that user's D-Bus session. Requires `libnotify` (`notify-send`) and a graphical session on `seat0`.
 
 ```
 [CRITICAL] READ ~/.secrets.d/.env - canary file read: /.env
@@ -188,6 +202,29 @@ sudo cp com.local.canary.plist /Library/LaunchDaemons/
 sudo launchctl load /Library/LaunchDaemons/com.local.canary.plist
 ```
 
+## Running as a systemd service (Linux)
+
+For NFS mode on Linux, an install script sets up a systemd unit that keeps
+canary running across reboots:
+
+```
+sudo ./install.sh
+```
+
+By default the mount point is `~/.secrets.d` of the user who ran `sudo`,
+resolved to an absolute path before being baked into the unit (systemd
+doesn't expand `~`). Override with `--mount-point /abs/path` or `--log /abs/path`.
+
+The script builds (if Go is installed), copies the binary to
+`/usr/local/bin/canary`, installs `/etc/systemd/system/canary.service`, and
+enables + starts the service. Logs go to `/var/log/canary.log` and the
+systemd journal (`journalctl -u canary -f`).
+
+Requires `mount.nfs` (`nfs-common` on Debian/Ubuntu, `nfs-utils` on
+Fedora/RHEL). Desktop notifications are optional and need `libnotify`.
+
+To remove: `sudo ./uninstall.sh`.
+
 ## Implementation
 
 ~1400 lines of Go. Zero third-party dependencies — only the standard library. Compiles to a single 8MB binary.
@@ -195,7 +232,7 @@ sudo launchctl load /Library/LaunchDaemons/com.local.canary.plist
 - `main.go` — CLI, mount/unmount lifecycle, signal handling
 - `server.go` — WebDAV protocol handler (PROPFIND, GET, LOCK, etc.)
 - `tree.go` — virtual file tree and default canary files
-- `alert.go` — deduplication, logging, macOS notifications, process identification
+- `alert.go` — deduplication, logging, desktop notifications, process identification
 - `rpc.go` — Sun RPC and XDR encoding for the NFS mode
 - `nfs.go` — NFSv3 and MOUNT protocol handler
 

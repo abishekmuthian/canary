@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -17,22 +16,26 @@ import (
 )
 
 func main() {
-	mode := flag.String("mode", "webdav", "server mode: webdav or nfs")
+	mode := flag.String("mode", defaultMode, "server mode: webdav or nfs")
 	port := flag.Int("port", 0, "server port (0 = random)")
 	verbose := flag.Bool("v", false, "verbose logging (show suppressed duplicates)")
-	notify := flag.Bool("notify", true, "send macOS notifications on alerts")
+	notify := flag.Bool("notify", true, "send desktop notifications on alerts")
 	logFile := flag.String("log", "", "log to file instead of stderr")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: canary [flags] <mountpoint> [mountpoint...]\n\n")
 		fmt.Fprintf(os.Stderr, "Mount canary filesystems that alert on access.\n\n")
 		fmt.Fprintf(os.Stderr, "Modes:\n")
-		fmt.Fprintf(os.Stderr, "  webdav  No root needed. Runs as current user. (default)\n")
+		if webDAVSupported {
+			fmt.Fprintf(os.Stderr, "  webdav  No root needed. Runs as current user.\n")
+		}
 		fmt.Fprintf(os.Stderr, "  nfs     Requires root. Server invisible to unprivileged attackers.\n")
 		fmt.Fprintf(os.Stderr, "          Mount appears as normal NFS in mount table.\n\n")
 		fmt.Fprintf(os.Stderr, "Examples:\n")
-		fmt.Fprintf(os.Stderr, "  canary ~/.secrets.d\n")
-		fmt.Fprintf(os.Stderr, "  canary ~/.secrets.d ~/.aws-backup ~/credentials\n")
+		if webDAVSupported {
+			fmt.Fprintf(os.Stderr, "  canary ~/.secrets.d\n")
+			fmt.Fprintf(os.Stderr, "  canary ~/.secrets.d ~/.aws-backup ~/credentials\n")
+		}
 		fmt.Fprintf(os.Stderr, "  sudo canary -mode nfs -log /var/log/canary.log ~/.secrets.d\n\n")
 		flag.PrintDefaults()
 	}
@@ -65,8 +68,17 @@ func main() {
 	tree := DefaultTree()
 	alerter := NewAlerter(*notify, *verbose)
 
+	if *notify {
+		if err := validateNotifyBinary(); err != nil {
+			log.Fatalf("notification setup: %v", err)
+		}
+	}
+
 	switch *mode {
 	case "webdav":
+		if !webDAVSupported {
+			log.Fatal("webdav mode is not supported on this platform; use -mode nfs (requires sudo)")
+		}
 		runWebDAV(tree, alerter, mounts, *port)
 	case "nfs":
 		runNFS(tree, alerter, mounts, *port)
@@ -96,9 +108,8 @@ func runWebDAV(tree *VNode, alerter *Alerter, mounts []string, port int) {
 			os.Exit(1)
 		}
 		url := fmt.Sprintf("http://127.0.0.1:%d/m/%d/", actualPort, i)
-		cmd := exec.Command("mount_webdav", "-S", url, mp)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			log.Printf("mount %s failed: %v %s", mp, err, string(out))
+		if err := mountWebDAV(url, mp); err != nil {
+			log.Printf("mount %s failed: %v", mp, err)
 			unmountAll(mounted)
 			os.Exit(1)
 		}
@@ -143,11 +154,8 @@ func runNFS(tree *VNode, alerter *Alerter, mounts []string, port int) {
 		log.Fatalf("mkdir %s: %v", mp, err)
 	}
 
-	// Mount NFS — specify both port and mountport to avoid needing portmapper
-	mountArgs := fmt.Sprintf("vers=3,tcp,port=%d,mountport=%d,locallocks,noresvport", actualPort, actualPort)
-	cmd := exec.Command("mount_nfs", "-o", mountArgs, "localhost:/canary", mp)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		log.Fatalf("mount_nfs %s failed: %v %s", mp, err, string(out))
+	if err := mountNFS(actualPort, mp); err != nil {
+		log.Fatalf("mount_nfs %s failed: %v", mp, err)
 	}
 	log.Printf("mounted: %s (nfs)", mp)
 	log.Println("canary active — Ctrl+C to stop")
@@ -166,13 +174,4 @@ func waitForSignal() {
 	fmt.Println()
 }
 
-func unmountAll(mounts []string) {
-	for _, mp := range mounts {
-		if err := exec.Command("umount", mp).Run(); err != nil {
-			log.Printf("unmount %s: %v (trying force)", mp, err)
-			exec.Command("diskutil", "unmount", "force", mp).Run()
-		} else {
-			log.Printf("unmounted: %s", mp)
-		}
-	}
-}
+
